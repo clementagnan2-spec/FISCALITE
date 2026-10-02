@@ -1,0 +1,33 @@
+name: Build Fiscalite360 (Windows .exe)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lancer les tests
+        run: python -m pytest -q tests
+
+      - name: Compiler en .exe
+        run: pyinstaller --onefile --windowed --name Fiscalite360 main.py
+
+      - name: Publier l'exécutable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fiscalite360-windows
+          path: dist/Fiscalite360.exe
