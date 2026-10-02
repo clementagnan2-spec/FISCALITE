@@ -1,9 +1,9 @@
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from fiscalite360 import db, engine, seed_bf
+from fiscalite360 import db, engine, seed_bf, seed_autres
 
 def con():
-    c = db.connect(":memory:"); seed_bf.seed(c); return c
+    c = db.connect(":memory:"); seed_autres.seed_tous(c); return c
 
 def test_tva():
     r = engine.tva(con(), "BF", 10_000_000, 4_000_000)
@@ -33,7 +33,7 @@ def test_param_modifiable():
 def test_param_manquant():
     import pytest
     with pytest.raises(KeyError):
-        engine.tva(con(), "SN", 1, 1)
+        engine.tva(con(), "XX", 1, 1)
 
 
 def test_retenue_source():
@@ -48,3 +48,28 @@ def test_registre_retenues():
     engine.enregistrer_retenue(c, 1, "2026-10-03", "Fournisseur B", "LOYERS", 500_000)
     s = engine.synthese_retenues(c, 1)
     assert len(s) == 1 and s[0]["retenue"] == 150_000 and s[0]["a_reverser"] == 150_000
+
+
+def test_six_pays():
+    c = con()
+    codes = sorted(r["code"] for r in c.execute("SELECT code FROM pays"))
+    assert codes == ["BF", "BJ", "CI", "ML", "NE", "SN"]
+
+def test_chaque_pays_calcule_et_a_ses_retenues():
+    c = con()
+    for code in ["BF", "BJ", "CI", "ML", "NE", "SN"]:
+        assert engine.tva(c, code, 1_000_000, 0)["tva_collectee"] > 0
+        assert engine.impot_societes(c, code, 10_000_000, 100_000_000)["impot_du"] > 0
+        assert len(db.liste_retenues(c, code)) == 6
+
+def test_tva_niger_differente():
+    assert engine.tva(con(), "NE", 1_000_000, 0)["tva_collectee"] == 190_000
+
+def test_plafond_imf_senegal():
+    r = engine.impot_societes(con(), "SN", -1, 10_000_000_000)   # 0,5 % = 50 M, plafonné
+    assert r["imf"] == 5_000_000
+
+def test_bareme_salaires_absent_hors_bf():
+    import pytest
+    with pytest.raises(KeyError):
+        engine.iuts(con(), "SN", 100_000)

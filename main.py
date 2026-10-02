@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVB
     QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QComboBox,
     QLabel, QFormLayout, QDoubleSpinBox, QTextEdit, QMessageBox)
 from PyQt5.QtCore import Qt, QDate
-from fiscalite360 import db, engine, seed_bf
+from fiscalite360 import db, engine, seed_autres
 
 class EntreprisesTab(QWidget):
     def __init__(self, con, on_change):
@@ -46,14 +46,21 @@ class CentreFiscalTab(QWidget):
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Modifiez ici taux, seuils et références. Passez le statut à VALIDE "
                              "une fois la valeur vérifiée dans la loi de finances."))
+        self.filtre = QComboBox(); self.filtre.addItem("Tous les pays", None)
+        for r in con.execute("SELECT code, nom FROM pays ORDER BY nom"):
+            self.filtre.addItem(r["nom"], r["code"])
+        lay.addWidget(self.filtre)
         self.table = QTableWidget(0, len(self.COLS)); self.table.setHorizontalHeaderLabels(self.COLS)
+        self.filtre.currentIndexChanged.connect(lambda _: self.refresh())
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemChanged.connect(self.save_cell)
         lay.addWidget(self.table); self.refresh()
 
     def refresh(self):
         self.loading = True
-        rows = self.con.execute("SELECT * FROM parametre ORDER BY pays_code, impot, cle").fetchall()
+        pays = self.filtre.currentData()
+        rows = self.con.execute("SELECT * FROM parametre WHERE (? IS NULL OR pays_code=?) "
+                                "ORDER BY pays_code, impot, cle", (pays, pays)).fetchall()
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             vals = [r["pays_code"], r["impot"], r["cle"], r["libelle"] or "", r["valeur"],
@@ -88,7 +95,7 @@ class CalculTab(QWidget):
         self.f = {}
         for k, lab in (("ventes", "Ventes HT (période)"), ("achats", "Achats HT déductibles"),
                        ("resultat", "Résultat fiscal (IS)"), ("ca", "Chiffre d'affaires annuel (IS)"),
-                       ("acomptes", "Acomptes IS versés"), ("salaire", "Base IUTS mensuelle")):
+                       ("acomptes", "Acomptes IS versés"), ("salaire", "Base mensuelle impôt sur salaires")):
             s = QDoubleSpinBox(); s.setRange(-1e12, 1e12); s.setDecimals(0); s.setGroupSeparatorShown(True)
             self.f[k] = s; form.addRow(lab, s)
         lay.addLayout(form)
@@ -106,20 +113,27 @@ class CalculTab(QWidget):
         if not pays:
             self.out.setPlainText("Ajoutez d'abord une entreprise."); return
         v = {k: s.value() for k, s in self.f.items()}
+        n = lambda x: f"{x:,}".replace(",", " ")
+        txt = []
         try:
             t = engine.tva(self.con, pays, v["ventes"], v["achats"])
-            i = engine.impot_societes(self.con, pays, v["resultat"], v["ca"], v["acomptes"])
-            u = engine.iuts(self.con, pays, v["salaire"])
+            txt += [f"TVA collectée : {n(t['tva_collectee'])} | déductible : {n(t['tva_deductible'])}",
+                    f"TVA à payer : {n(t['tva_a_payer'])} | crédit : {n(t['credit_de_tva'])}", ""]
         except KeyError as e:
-            self.out.setPlainText(str(e)); return
-        n = lambda x: f"{x:,}".replace(",", " ")
+            txt += [f"TVA : {e}", ""]
+        try:
+            i = engine.impot_societes(self.con, pays, v["resultat"], v["ca"], v["acomptes"])
+            txt += [f"IS calculé : {n(i['is_calcule'])} | IMF : {n(i['imf'])} -> retenu : {i['retenu']}",
+                    f"Impôt dû : {n(i['impot_du'])} | solde à payer : {n(i['solde_a_payer'])}", ""]
+        except KeyError as e:
+            txt += [f"IS : {e}", ""]
+        try:
+            u = engine.iuts(self.con, pays, v["salaire"])
+            txt += [f"Impôt sur salaires (mensuel) : {n(u['iuts'])}"]
+        except KeyError as e:
+            txt += [str(e)]
         nonval = self.con.execute("SELECT COUNT(*) FROM parametre WHERE pays_code=? AND statut!='VALIDE'",
                                   (pays,)).fetchone()[0]
-        txt = [f"TVA collectée : {n(t['tva_collectee'])} | déductible : {n(t['tva_deductible'])}",
-               f"TVA à payer : {n(t['tva_a_payer'])} | crédit : {n(t['credit_de_tva'])}", "",
-               f"IS calculé : {n(i['is_calcule'])} | IMF : {n(i['imf'])} -> retenu : {i['retenu']}",
-               f"Impôt dû : {n(i['impot_du'])} | solde à payer : {n(i['solde_a_payer'])}", "",
-               f"IUTS mensuel : {n(u['iuts'])}"]
         if nonval:
             txt += ["", f"Attention : {nonval} paramètre(s) de ce pays ne sont pas encore VALIDÉS "
                         "(Centre Fiscal). Résultats indicatifs."]
@@ -199,14 +213,72 @@ class RetenuesTab(QWidget):
             for j, v in enumerate((r["libelle"], r["nb"], n(r["retenue"]), n(r["a_reverser"]))):
                 self.syn.setItem(i, j, QTableWidgetItem(str(v)))
 
+class BaremesTab(QWidget):
+    """Barème progressif de l'impôt sur les salaires, par pays (modifiable)."""
+    def __init__(self, con):
+        super().__init__(); self.con = con
+        lay = QVBoxLayout(self)
+        self.pays = QComboBox()
+        for r in con.execute("SELECT code, nom FROM pays ORDER BY nom"):
+            self.pays.addItem(r["nom"], r["code"])
+        self.pays.currentIndexChanged.connect(lambda _: self.load())
+        lay.addWidget(self.pays)
+        lay.addWidget(QLabel("Tranches mensuelles : de, jusqu'à (vide = sans plafond), taux en % (ex. 12.1). "
+                             "Les tranches doivent se suivre sans trou."))
+        self.table = QTableWidget(0, 3); self.table.setHorizontalHeaderLabels(["De", "Jusqu'à", "Taux (%)"])
+        lay.addWidget(self.table)
+        row = QHBoxLayout()
+        for txt, fn in (("Ajouter une tranche", self.add), ("Supprimer la tranche", self.remove),
+                        ("Enregistrer le barème", self.save)):
+            b = QPushButton(txt); b.clicked.connect(fn); row.addWidget(b)
+        lay.addLayout(row)
+        self.note = QLabel(""); lay.addWidget(self.note); self.load()
+
+    def load(self):
+        rows = self.con.execute("SELECT borne_min, borne_max, taux FROM tranche WHERE pays_code=? "
+                                "AND impot='IUTS' ORDER BY ordre", (self.pays.currentData(),)).fetchall()
+        self.table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            for j, v in enumerate((r["borne_min"], r["borne_max"], r["taux"] * 100)):
+                self.table.setItem(i, j, QTableWidgetItem("" if v is None else f"{v:g}"))
+        statut = self.con.execute("SELECT MIN(statut) FROM tranche WHERE pays_code=? AND impot='IUTS'",
+                                  (self.pays.currentData(),)).fetchone()[0]
+        self.note.setText("Aucun barème saisi pour ce pays." if not rows else
+                          ("Barème à valider avec la loi de finances." if statut != "VALIDE" else "Barème validé."))
+
+    def add(self): self.table.setRowCount(self.table.rowCount() + 1)
+    def remove(self):
+        r = self.table.currentRow()
+        if r >= 0: self.table.removeRow(r)
+
+    def save(self):
+        tr = []
+        try:
+            for i in range(self.table.rowCount()):
+                g = lambda j: (self.table.item(i, j).text().strip().replace(",", ".") if self.table.item(i, j) else "")
+                mn, mx, tx = float(g(0)), (float(g(1)) if g(1) else None), float(g(2)) / 100
+                if mx is not None and mx <= mn: raise ValueError(f"Ligne {i+1} : 'Jusqu'à' doit dépasser 'De'.")
+                if i and tr[-1][1] != mn: raise ValueError(f"Ligne {i+1} : la tranche doit commencer à {tr[-1][1]}.")
+                if tr and tr[-1][1] is None: raise ValueError("Une tranche sans plafond doit être la dernière.")
+                tr.append((mn, mx, tx))
+        except (ValueError, TypeError) as e:
+            QMessageBox.warning(self, "Barème invalide", str(e)); return
+        p = self.pays.currentData()
+        self.con.execute("DELETE FROM tranche WHERE pays_code=? AND impot='IUTS'", (p,))
+        for k, (mn, mx, tx) in enumerate(tr, 1):
+            self.con.execute("INSERT INTO tranche (pays_code, impot, ordre, borne_min, borne_max, taux, statut) "
+                             "VALUES (?, 'IUTS', ?, ?, ?, ?, 'A_VALIDER')", (p, k, mn, mx, tx))
+        self.con.commit(); self.load()
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("FISCALITÉ360 PRO"); self.resize(900, 600)
-        self.con = db.connect(); seed_bf.seed(self.con)
+        self.con = db.connect(); seed_autres.seed_tous(self.con)
         tabs = QTabWidget(); self.calcul = CalculTab(self.con)
         self.retenues = RetenuesTab(self.con)
         tabs.addTab(EntreprisesTab(self.con, lambda: (self.calcul.reload(), self.retenues.reload())), "Entreprises")
         tabs.addTab(CentreFiscalTab(self.con), "Centre Fiscal")
+        tabs.addTab(BaremesTab(self.con), "Barèmes salaires")
         tabs.addTab(self.calcul, "Calculs")
         tabs.addTab(self.retenues, "Retenues à la source")
         self.setCentralWidget(tabs)

@@ -1,6 +1,6 @@
 """Moteur de calcul. Aucune règle en dur : tout vient des tables de paramètres."""
 from decimal import Decimal, ROUND_HALF_UP
-from .db import get_param, get_tranches, liste_retenues
+from .db import get_param, get_param_opt, get_tranches, liste_retenues
 
 def _d(x): return Decimal(str(x))
 def fcfa(x):  # arrondi au franc
@@ -20,6 +20,9 @@ def impot_societes(con, pays, resultat_fiscal, chiffre_affaires, acomptes_verses
     imf_min = _d(get_param(con, pays, "IS", "imf_minimum"))
     is_calc = max(_d(resultat_fiscal), Decimal(0)) * taux
     imf = max(_d(chiffre_affaires) * imf_taux, imf_min)
+    imf_max = _d(get_param_opt(con, pays, "IS", "imf_maximum", 0))
+    if imf_max > 0:
+        imf = min(imf, imf_max)
     du = max(is_calc, imf)
     solde = du - _d(acomptes_verses)
     return {"is_calcule": fcfa(is_calc), "imf": fcfa(imf), "impot_du": fcfa(du),

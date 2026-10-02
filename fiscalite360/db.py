@@ -56,11 +56,16 @@ def get_param(con, pays, impot, cle):
         raise KeyError(f"Paramètre manquant : {pays}/{impot}/{cle} (voir Centre Fiscal)")
     return r["valeur"]
 
+def get_param_opt(con, pays, impot, cle, defaut=0):
+    r = con.execute("SELECT valeur FROM parametre WHERE pays_code=? AND impot=? AND cle=?",
+                    (pays, impot, cle)).fetchone()
+    return defaut if r is None else r["valeur"]
+
 def get_tranches(con, pays, impot):
     rows = con.execute("SELECT borne_min, borne_max, taux FROM tranche "
                        "WHERE pays_code=? AND impot=? ORDER BY ordre", (pays, impot)).fetchall()
     if not rows:
-        raise KeyError(f"Barème manquant : {pays}/{impot}")
+        raise KeyError(f"Barème de l'impôt sur les salaires manquant pour {pays} : saisissez-le dans l'onglet Barèmes")
     return [(r["borne_min"], r["borne_max"], r["taux"]) for r in rows]
 
 def liste_retenues(con, pays):
