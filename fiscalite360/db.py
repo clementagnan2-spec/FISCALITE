@@ -21,6 +21,14 @@ CREATE TABLE IF NOT EXISTS parametre (
     reference_legale TEXT,                       -- à renseigner par l'utilisateur
     date_maj TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (pays_code, impot, cle));
+CREATE TABLE IF NOT EXISTS retenue_operee (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entreprise_id INTEGER NOT NULL REFERENCES entreprise(id),
+    date_op TEXT NOT NULL, tiers TEXT NOT NULL,
+    code TEXT NOT NULL, libelle TEXT,
+    montant_brut INTEGER NOT NULL, taux REAL NOT NULL,
+    retenue INTEGER NOT NULL, net_a_payer INTEGER NOT NULL,
+    reversee INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS tranche (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pays_code TEXT NOT NULL REFERENCES pays(code),
@@ -54,3 +62,8 @@ def get_tranches(con, pays, impot):
     if not rows:
         raise KeyError(f"Barème manquant : {pays}/{impot}")
     return [(r["borne_min"], r["borne_max"], r["taux"]) for r in rows]
+
+def liste_retenues(con, pays):
+    """Types de retenues à la source du pays (stockés dans parametre, impot='RAS')."""
+    return con.execute("SELECT cle, libelle, valeur, statut FROM parametre "
+                       "WHERE pays_code=? AND impot='RAS' ORDER BY cle", (pays,)).fetchall()

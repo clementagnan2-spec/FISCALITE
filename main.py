@@ -3,7 +3,7 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QComboBox,
     QLabel, QFormLayout, QDoubleSpinBox, QTextEdit, QMessageBox)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QDate
 from fiscalite360 import db, engine, seed_bf
 
 class EntreprisesTab(QWidget):
@@ -125,14 +125,90 @@ class CalculTab(QWidget):
                         "(Centre Fiscal). Résultats indicatifs."]
         self.out.setPlainText("\n".join(txt))
 
+class RetenuesTab(QWidget):
+    """Retenues à la source : types, calcul, registre et total à reverser."""
+    def __init__(self, con):
+        super().__init__(); self.con = con
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.ent = QComboBox(); self.ent.currentIndexChanged.connect(self.on_entreprise)
+        self.type = QComboBox(); self.type.currentIndexChanged.connect(self.preview)
+        top.addWidget(QLabel("Entreprise :")); top.addWidget(self.ent, 1)
+        top.addWidget(QLabel("Type de retenue :")); top.addWidget(self.type, 2)
+        lay.addLayout(top)
+        row = QHBoxLayout()
+        self.tiers = QLineEdit(); self.tiers.setPlaceholderText("Tiers (fournisseur, bailleur...)")
+        self.brut = QDoubleSpinBox(); self.brut.setRange(0, 1e12); self.brut.setDecimals(0)
+        self.brut.setGroupSeparatorShown(True); self.brut.valueChanged.connect(self.preview)
+        btn = QPushButton("Enregistrer la retenue"); btn.clicked.connect(self.save)
+        row.addWidget(self.tiers, 2); row.addWidget(QLabel("Montant brut :")); row.addWidget(self.brut); row.addWidget(btn)
+        lay.addLayout(row)
+        self.info = QLabel(""); lay.addWidget(self.info)
+        lay.addWidget(QLabel("Registre des retenues opérées"))
+        self.reg = QTableWidget(0, 7)
+        self.reg.setHorizontalHeaderLabels(["Date", "Tiers", "Type", "Brut", "Taux", "Retenue", "Net payé"])
+        self.reg.horizontalHeader().setStretchLastSection(True); lay.addWidget(self.reg)
+        lay.addWidget(QLabel("Synthèse par type (à reverser au Trésor)"))
+        self.syn = QTableWidget(0, 4)
+        self.syn.setHorizontalHeaderLabels(["Type", "Nb", "Total retenu", "Reste à reverser"])
+        self.syn.horizontalHeader().setStretchLastSection(True); lay.addWidget(self.syn)
+        self.reload()
+
+    def reload(self):
+        self.ent.blockSignals(True); self.ent.clear()
+        for r in self.con.execute("SELECT id, nom, pays_code FROM entreprise ORDER BY nom"):
+            self.ent.addItem(f"{r['nom']} ({r['pays_code']})", (r["id"], r["pays_code"]))
+        self.ent.blockSignals(False); self.on_entreprise()
+
+    def on_entreprise(self):
+        self.type.blockSignals(True); self.type.clear()
+        d = self.ent.currentData()
+        if d:
+            for r in db.liste_retenues(self.con, d[1]):
+                flag = "" if r["statut"] == "VALIDE" else "  [à valider]"
+                self.type.addItem(f"{r['libelle']} - {r['valeur']*100:g} %{flag}", r["cle"])
+        self.type.blockSignals(False); self.preview(); self.refresh()
+
+    def preview(self):
+        d = self.ent.currentData(); code = self.type.currentData()
+        if not d or not code: self.info.setText(""); return
+        r = engine.retenue_source(self.con, d[1], code, self.brut.value())
+        n = lambda x: f"{x:,}".replace(",", " ")
+        self.info.setText(f"Retenue : {n(r['retenue'])}   |   Net à payer au tiers : {n(r['net_a_payer'])}")
+
+    def save(self):
+        d = self.ent.currentData(); code = self.type.currentData()
+        if not d or not code or not self.tiers.text().strip() or self.brut.value() <= 0:
+            QMessageBox.information(self, "Retenue", "Renseignez l'entreprise, le type, le tiers et le montant."); return
+        engine.enregistrer_retenue(self.con, d[0], QDate.currentDate().toString("yyyy-MM-dd"),
+                                   self.tiers.text().strip(), code, self.brut.value())
+        self.tiers.clear(); self.brut.setValue(0); self.refresh()
+
+    def refresh(self):
+        d = self.ent.currentData(); n = lambda x: f"{int(x or 0):,}".replace(",", " ")
+        rows = self.con.execute("SELECT * FROM retenue_operee WHERE entreprise_id=? ORDER BY id DESC",
+                                (d[0] if d else -1,)).fetchall()
+        self.reg.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            for j, v in enumerate((r["date_op"], r["tiers"], r["libelle"], n(r["montant_brut"]),
+                                   f"{r['taux']*100:g} %", n(r["retenue"]), n(r["net_a_payer"]))):
+                self.reg.setItem(i, j, QTableWidgetItem(str(v)))
+        syn = engine.synthese_retenues(self.con, d[0]) if d else []
+        self.syn.setRowCount(len(syn))
+        for i, r in enumerate(syn):
+            for j, v in enumerate((r["libelle"], r["nb"], n(r["retenue"]), n(r["a_reverser"]))):
+                self.syn.setItem(i, j, QTableWidgetItem(str(v)))
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("FISCALITÉ360 PRO"); self.resize(900, 600)
         self.con = db.connect(); seed_bf.seed(self.con)
         tabs = QTabWidget(); self.calcul = CalculTab(self.con)
-        tabs.addTab(EntreprisesTab(self.con, self.calcul.reload), "Entreprises")
+        self.retenues = RetenuesTab(self.con)
+        tabs.addTab(EntreprisesTab(self.con, lambda: (self.calcul.reload(), self.retenues.reload())), "Entreprises")
         tabs.addTab(CentreFiscalTab(self.con), "Centre Fiscal")
         tabs.addTab(self.calcul, "Calculs")
+        tabs.addTab(self.retenues, "Retenues à la source")
         self.setCentralWidget(tabs)
 
 if __name__ == "__main__":

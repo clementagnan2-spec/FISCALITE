@@ -11,6 +11,13 @@ PARAMETRES = [
     ("IS",  "taux", 0.275, "Taux de l'impôt sur les sociétés"),
     ("IS",  "imf_taux", 0.005, "Impôt minimum forfaitaire : taux sur chiffre d'affaires"),
     ("IS",  "imf_minimum", 1000000, "Impôt minimum forfaitaire : plancher (FCFA)"),
+    # Retenues à la source (impot = 'RAS'). Taux INDICATIFS, à vérifier un par un.
+    ("RAS", "PRESTATIONS_RESIDENT", 0.05, "Retenue sur prestations de services (fournisseur résident)"),
+    ("RAS", "PRESTATIONS_NON_RESIDENT", 0.20, "Retenue sur prestations payées à un non-résident"),
+    ("RAS", "LOYERS", 0.10, "Retenue sur loyers versés"),
+    ("RAS", "HONORAIRES_COMMISSIONS", 0.05, "Retenue sur honoraires, commissions, courtages"),
+    ("RAS", "DIVIDENDES_IRCM", 0.125, "Retenue sur dividendes (revenus de capitaux mobiliers)"),
+    ("RAS", "FOURNISSEUR_SANS_IFU", 0.25, "Retenue majorée : fournisseur sans numéro IFU"),
 ]
 
 # Barème mensuel IUTS (impot sur traitements et salaires) : (min, max, taux)

@@ -1,6 +1,6 @@
 """Moteur de calcul. Aucune règle en dur : tout vient des tables de paramètres."""
 from decimal import Decimal, ROUND_HALF_UP
-from .db import get_param, get_tranches
+from .db import get_param, get_tranches, liste_retenues
 
 def _d(x): return Decimal(str(x))
 def fcfa(x):  # arrondi au franc
@@ -41,3 +41,28 @@ def progressif(base, tranches):
 def iuts(con, pays, base_imposable_mensuelle):
     total, detail = progressif(base_imposable_mensuelle, get_tranches(con, pays, "IUTS"))
     return {"iuts": total, "detail": detail}
+
+
+def retenue_source(con, pays, code, montant_brut):
+    """Retenue à la source = brut x taux ; net à payer au tiers = brut - retenue."""
+    taux = _d(get_param(con, pays, "RAS", code))
+    ret = fcfa(_d(montant_brut) * taux)
+    return {"code": code, "taux": float(taux), "montant_brut": fcfa(montant_brut),
+            "retenue": ret, "net_a_payer": fcfa(montant_brut) - ret}
+
+def enregistrer_retenue(con, entreprise_id, date_op, tiers, code, montant_brut):
+    pays = con.execute("SELECT pays_code FROM entreprise WHERE id=?", (entreprise_id,)).fetchone()["pays_code"]
+    r = retenue_source(con, pays, code, montant_brut)
+    lib = next((x["libelle"] for x in liste_retenues(con, pays) if x["cle"] == code), code)
+    con.execute("INSERT INTO retenue_operee (entreprise_id,date_op,tiers,code,libelle,montant_brut,taux,retenue,net_a_payer) "
+                "VALUES (?,?,?,?,?,?,?,?,?)", (entreprise_id, date_op, tiers, code, lib,
+                r["montant_brut"], r["taux"], r["retenue"], r["net_a_payer"]))
+    con.commit()
+    return r
+
+def synthese_retenues(con, entreprise_id):
+    """Totaux par type de retenue, et montant restant à reverser au Trésor."""
+    return con.execute("SELECT libelle, COUNT(*) AS nb, SUM(montant_brut) AS brut, SUM(retenue) AS retenue, "
+                       "SUM(CASE WHEN reversee=0 THEN retenue ELSE 0 END) AS a_reverser "
+                       "FROM retenue_operee WHERE entreprise_id=? GROUP BY code ORDER BY libelle",
+                       (entreprise_id,)).fetchall()

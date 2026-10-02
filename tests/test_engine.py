@@ -34,3 +34,17 @@ def test_param_manquant():
     import pytest
     with pytest.raises(KeyError):
         engine.tva(con(), "SN", 1, 1)
+
+
+def test_retenue_source():
+    c = con()
+    r = engine.retenue_source(c, "BF", "PRESTATIONS_RESIDENT", 2_000_000)
+    assert r["retenue"] == 100_000 and r["net_a_payer"] == 1_900_000
+
+def test_registre_retenues():
+    c = con()
+    c.execute("INSERT INTO entreprise (nom, pays_code) VALUES ('Test','BF')")
+    engine.enregistrer_retenue(c, 1, "2026-10-02", "Fournisseur A", "LOYERS", 1_000_000)
+    engine.enregistrer_retenue(c, 1, "2026-10-03", "Fournisseur B", "LOYERS", 500_000)
+    s = engine.synthese_retenues(c, 1)
+    assert len(s) == 1 and s[0]["retenue"] == 150_000 and s[0]["a_reverser"] == 150_000
